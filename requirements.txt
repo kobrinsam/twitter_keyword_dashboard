@@ -3,6 +3,5 @@ altair
 pandas
 streamlit
 sklearn
-requests
-zipfile2
 streamlit_lottie
+tweepy

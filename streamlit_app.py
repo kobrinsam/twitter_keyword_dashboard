@@ -2,142 +2,167 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 import numpy as np
-import requests, zipfile, io
+import tweepy # tweepy module to interact with Twitter
+from tweepy import OAuthHandler # Used for authentication
+from tweepy import Cursor # Used to perform pagination
 from streamlit_lottie import st_lottie  # pip install streamlit-lottie
-import json
 import datetime as dt
-st.title("USDA Economic Reseach Service Feed Grains Dashboard")
-st.caption("This dashboard contains statistics on four feed grains (corn, grain sorghum, barley, and oats), foreign coarse grains (feed grains plus rye, millet, and mixed grains), hay, and related items. This includes data published in the monthly Feed Outlook and previously annual Feed Yearbook. Data are monthly, quarterly, and/or annual depending upon the data series. Latest data may be preliminary or projected. Missing values indicate unreported values, discontinued series, or not yet released data.")
+####
+#packages for regression
+from sklearn import linear_model
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import LabelEncoder 
+st.title("Twitter Keyword Dashboard")
+st.caption("Determining what words lead to more Likes and Retweets")
+##input parameters
+handle = st.text_input("Twitter Handle", value="@JoeBiden", max_chars= 100, placeholder= 'Enter a Twitter Handle', disabled=False)
+handle = str.replace(handle, "@", "")
 
-zip_file_url = "https://www.ers.usda.gov/webdocs/DataFiles/50048/FeedGrains.zip?v=7455.2"
+##############################
+#get data
 
-##function to format date
-def date_format(freq, year, time, time_id):
-  if freq == 1:
-      return time +'-'+ year
-  elif freq == 2:
-    if str(time_id)[-1] == "1":
-     return "Jan" +'-'+ year
-    elif str(time_id)[-1] == "2":
-      return "Apr" +'-'+ year
-    elif str(time_id)[-1] == "3":
-      return "July" +'-'+ year
-    else:
-      return "Oct" +'-'+ year
-  elif freq == 3:
-    return "Jan" +'-'+ year
+#Twitter Authentification Credentials
+#Please update with your own credentials
 
+cons_key = "zb9UbcG60lwbKXNMsaSS1kI3O" 
+cons_secret = "gHueFvA0s6uiivq50Z7E47z2ApNNPFS1wkSF2zyb4BJKCdMrpY"
+acc_token = '1510386735720677385-qEYcyId4jjXD1MLwsm3SiZKY3u4xI6'
+acc_secret = "7ClAeBHNud1Ad4lIMK2DudGs6gnmlLKZk0DEqeHTbouwn"
 
-#import data
+# (1). Athentication Function
+def get_twitter_auth():
+    """
+    @return:
+        - the authentification to Twitter
+    """
+    try:
+        consumer_key = cons_key
+        consumer_secret = cons_secret
+        access_token = acc_token
+        access_secret = acc_secret
+        
+    except KeyError:
+        sys.stderr.write("Twitter Environment Variable not Set\n")
+        sys.exit(1)
+        
+    auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
+    auth.set_access_token(access_token, access_secret)
+    
+    return auth
+# (2). Client function to access the authentication API
+def get_twitter_client():
+    """
+    @return:
+        - the client to access the authentification API
+    """
+    auth = get_twitter_auth()
+    client = tweepy.API(auth, wait_on_rate_limit=True)
+    return client
+# (3). Function creating final dataframe
 @st.experimental_memo
-def get_data():
-    r = requests.get(zip_file_url, stream=True)
-    z = zipfile.ZipFile(io.BytesIO(r.content))
-    z.extractall()
-    df = pd.read_csv(z.open('FeedGrains.csv'))
-    #format dates
-    df['Year_ID'] = df['Year_ID'].apply(lambda x: str(x))
-    df['Date'] = df.apply(lambda x: date_format(x["SC_Frequency_ID"], x["Year_ID"], x["Timeperiod_Desc"], x["Timeperiod_ID"]), axis=1)
-    df['Date'] = pd.to_datetime(df['Date'])
+def get_tweets_from_user(twitter_user_name, page_limit=40, count_tweet=200):
+    """
+    @params:
+        - twitter_user_name: the twitter username of a user (company, etc.)
+        - page_limit: the total number of pages (max=16)
+        - count_tweet: maximum number to be retrieved from a page
+        
+    @return
+        - all the tweets from the user twitter_user_name
+    """
+    client = get_twitter_client()
+    
+    all_tweets = []
+    
+    for page in Cursor(client.user_timeline, 
+                        screen_name=twitter_user_name, 
+                        count=count_tweet).pages(page_limit):
+        for tweet in page:
+            parsed_tweet = {}
+            parsed_tweet['date'] = tweet.created_at
+            parsed_tweet['author'] = tweet.user.name
+            parsed_tweet['twitter_name'] = tweet.user.screen_name
+            parsed_tweet['text'] = tweet.text
+            parsed_tweet['number_of_likes'] = tweet.favorite_count
+            parsed_tweet['number_of_retweets'] = tweet.retweet_count
+                
+            all_tweets.append(parsed_tweet)
+    
+    # Create dataframe 
+    df = pd.DataFrame(all_tweets)
+    
+    # Revome duplicates if there are any
+    df = df.drop_duplicates( "text" , keep='first')
+    
     return df
-df = get_data()
 
+tweets_df = get_tweets_from_user(handle)
+### prepare text for analysis
+import gensim
+from gensim.utils import simple_preprocess
+from gensim.parsing.preprocessing import STOPWORDS
+from nltk.stem import WordNetLemmatizer, SnowballStemmer as stemmer
+from nltk.stem.porter import *
+import numpy as np
+np.random.seed(2018)
+import nltk
+import pandas as pd
+import numpy as np
 
-### sidebar
-with st.sidebar:
-    df = df[df.SC_GeographyIndented_Desc == "United States"]
-    group = st.multiselect('Group', list(df.SC_Group_Desc.unique()), default='Prices')
-    df_group = df[df.SC_Group_Desc.isin(group)]
-  
-    attr = st.multiselect('Data Attribute', list(df_group.SC_Attribute_Desc.unique()))
-    attr_df = df_group[df_group.SC_Attribute_Desc.isin(attr)]
-    comm = st.multiselect('Commodity', list(attr_df.SC_Commodity_Desc.unique()))
-    comm_df= attr_df[attr_df.SC_Commodity_Desc.isin(comm)]
-    dateFreq = st.radio('Frequency', list(comm_df.SC_Frequency_Desc.unique()))
-    freq_df = comm_df[comm_df.SC_Frequency_Desc == dateFreq].rename(columns={"SC_Commodity_Desc":"Commodity"})
+nltk.download('wordnet')
+nltk.download('omw-1.4')
+my_stop_words = STOPWORDS.union(set(['https', 'usda', 'thank']))
+def lemmatize_stemming(text):
+    return WordNetLemmatizer().lemmatize(text, pos='v')
 
-    comm_str = " "
-    comm_delim = np.where(len(comm)>1,", ", " ")
-    for c in enumerate(comm):
-       comm_str =  comm_str + c[1] +  str(np.where(c[0]>-1,", ", " "))
+def string_preprocess(text):
+    result = ''
+    for token in gensim.utils.simple_preprocess(text):
+        if token not in my_stop_words and len(token) > 3:
+            result = result + lemmatize_stemming(token) + ' '
+    return result
+tweets_df['cleaned_text'] = tweets_df['text'].apply(lambda x: string_preprocess(x))
 
-#filters
-unit = np.where(len(freq_df.SC_Unit_Desc.unique())<1,"", freq_df.SC_Unit_Desc.min())
-if len(comm) <1:
-    chart_title =  "<<< Select Data of Interest From the Sidebar To Get Started"
-    st.subheader(chart_title)
-    ###lottefile
-    # GitHub: https://github.com/andfanilo/streamlit-lottie
-    # Lottie Files: https://lottiefiles.com/
+### regression analysis
+from sklearn.linear_model import Ridge
+vectorizer = TfidfVectorizer()
+X = vectorizer.fit_transform(tweets_df['cleaned_text'])
 
-    def load_lottiefile(filepath: str):
-        with open(filepath, "r") as f:
-            return json.load(f)
+estimators = [("tf_idf", TfidfVectorizer()), 
+              ("ridge", Ridge())]
+model = Pipeline(estimators)
+y = tweets_df['cleaned_text']
+tweets_df['number_of_likes_and_retweets'] = tweets_df['number_of_likes'] + tweets_df['number_of_retweets']
+#average tweet
+tweet_avg = tweets_df['number_of_likes_and_retweets'].mean()
+tweets_df['like_and_retweet_diff_from_average'] =  tweets_df['number_of_likes_and_retweets'] - tweet_avg
 
+model.fit(tweets_df['cleaned_text'], tweets_df['like_and_retweet_diff_from_average'])
+ridge_model = model.named_steps["ridge"]
+tf_idf_model = model.named_steps["tf_idf"]
+coefficients = pd.DataFrame({"keywords":tf_idf_model.get_feature_names(),
+                             "impact score":ridge_model.coef_})
 
-    def load_lottieurl(url: str):
-        r = requests.get(url)
-        if r.status_code != 200:
-            return None
-        return r.json()
-    
+################################
+#dashboard
+charty = alt.Chart(coefficients.sort_values('impact score', ascending= False).head(20)).mark_bar().encode(
+    x='impact score',
+    y=alt.Y('keywords', sort='-x'))
+st.text("{} tweets queiried".format(len(tweets_df)))
+st.subheader('Top Keywords Assocated With More Likes and Retweets')
+st.altair_chart(charty)
+charty_last = alt.Chart(coefficients.sort_values('impact score', ascending= False).tail(20)).mark_bar().encode(
+    x='impact score',
+    y=alt.Y('keywords', sort='-x'))
 
-    #lottie_coding = load_lottiefile("lottiefile.json")  # replace link to local lottie file
-    lottie_wheat = load_lottieurl("https://assets10.lottiefiles.com/private_files/lf30_fogqgdsk.json")
-   
-    st_lottie(
-        lottie_wheat,
-        speed=1,
-        reverse=False,
-        loop=True,
-        quality="low", # medium ; high
-         # canvas
-        height=None,
-        width=None,
-        key=None,
-    )
-
-else:
-    chart_title =  "{}: {} {}".format(attr[0], comm_str , unit)
-    st.subheader(chart_title)
-    chart = alt.Chart(freq_df).mark_line().encode(
-    x='Date',
-    y= alt.Y('Amount', title = "{}".format(unit)),
-    color='Commodity',
-    strokeDash='Commodity',
-    tooltip=['Commodity', 'Amount', 'SC_Unit_Desc', 'Date']).interactive()
-    st.altair_chart(chart, use_container_width=True)
-if len(comm) <1:
-    table_title =  ""
-else:
-    @st.cache
-    def convert_df(df):
-         # IMPORTANT: Cache the conversion to prevent computation on every rerun
-         return df.to_csv().encode('utf-8')
-
-    csv = convert_df(freq_df)
-
-    st.download_button(
-         label="Download The Data as CSV",
-         data=csv,
-         file_name='feed_grains.csv',
-         mime='text/csv',
-     )
-    table_title = "Data Table: {}: {}".format(attr[0] , unit)
-    st.text(table_title)
-    displaytable =  freq_df[['Date', "Amount", "Commodity"]]
-    displaytable = displaytable.set_index("Date")
-    
-    displaytable["Amount"] =  displaytable["Amount"].round(0)
-   
-    
-
-    displaytable = pd.pivot_table(displaytable, values = 'Amount', index= 'Date', columns = 'Commodity')
-    displaytable.index = displaytable.index.strftime("%b-%Y")
-
-    st.dataframe(displaytable.style.set_precision(0))
+st.subheader('Keywords Assocated With Less Likes and Retweets')
+st.altair_chart(charty_last)
+st.table(coefficients.sort_values("impact score", ascending=False).head(20))
+###################
 ##footer
-st.write("Data Sources: [Feed Grains: Yearbook Table, USDA Economic Reseach Service](https://www.ers.usda.gov/data-products/feed-grains-database)")
+st.write("Data Sources: Twitter API")
 st.text('By Sam Kobrin')
 
 
