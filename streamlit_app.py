@@ -26,10 +26,10 @@ handle = str.replace(handle, "@", "")
 #Twitter Authentification Credentials
 #Please update with your own credentials
 
-cons_key = "zb9UbcG60lwbKXNMsaSS1kI3O" 
-cons_secret = "gHueFvA0s6uiivq50Z7E47z2ApNNPFS1wkSF2zyb4BJKCdMrpY"
-acc_token = '1510386735720677385-qEYcyId4jjXD1MLwsm3SiZKY3u4xI6'
-acc_secret = "7ClAeBHNud1Ad4lIMK2DudGs6gnmlLKZk0DEqeHTbouwn"
+cons_key = st.secret.key
+cons_secret = st.secret.cons
+acc_token = st.secret.token
+acc_secret = st.secret.acc
 
 # (1). Athentication Function
 def get_twitter_auth():
